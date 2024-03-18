@@ -1,4 +1,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+# copybara:comment_begin(oss only)
+load("@local_config_cuda//cuda:build_defs.bzl", "if_hermetic_cuda_tools")
 load(
     "@local_tsl//tsl/platform:build_config_root.bzl",
     "if_static",
@@ -12,6 +15,8 @@ load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
+
+# copybara:comment_end
 load(
     "//xla:xla.bzl",
     "xla_cc_test",
@@ -113,13 +118,22 @@ cuda_only_cc_library(
 
 # Buildozer can not remove dependencies inside select guards, so we have to use
 # an intermediate target.
-cc_library(name = "ptxas_wrapper")
+cc_library(
+    name = "ptxas_wrapper",
+    data = ["if_hermetic_cuda_tools([\"@cuda_nvcc//:ptxas\"])"],
+)
 
-cc_library(name = "nvlink_wrapper")
+cc_library(
+    name = "nvlink_wrapper",
+    data = ["if_hermetic_cuda_tools([\"@cuda_nvcc//:nvlink\"])"],
+)
 
 # Buildozer can not remove dependencies inside select guards, so we have to use
 # an intermediate target.
-cc_library(name = "fatbinary_wrapper")
+cc_library(
+    name = "fatbinary_wrapper",
+    data = ["if_hermetic_cuda_tools([\"@cuda_nvcc//:fatbinary\"])"],
+)
 
 cuda_only_cc_library(
     name = "cuda_driver",
