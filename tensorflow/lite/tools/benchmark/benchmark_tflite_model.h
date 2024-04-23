@@ -25,8 +25,11 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/lite/core/model.h"
+#include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/profiling/profiler.h"
+#include "tensorflow/lite/signature_runner.h"
 #include "tensorflow/lite/tools/benchmark/benchmark_model.h"
+#include "tensorflow/lite/tools/logging.h"
 #include "tensorflow/lite/tools/model_loader.h"
 #include "tensorflow/lite/tools/utils.h"
 
@@ -51,6 +54,127 @@ namespace benchmark {
 TfLiteStatus SplitInputLayerNameAndValueFile(
     const std::string& name_and_value_file,
     std::pair<std::string, std::string>& name_file_pair);
+
+// Provides a simplified interface to work with the interpreter and signature
+// runner, automatically selecting the appropriate one based on whether a
+// signature is specified.
+class BenchmarkInterpreterRunner {
+ public:
+  BenchmarkInterpreterRunner(tflite::Interpreter* const interpreter,
+                             tflite::SignatureRunner* const signature_runner,
+                             tflite::Subgraph* const subgraph)
+      : interpreter_(interpreter), subgraph_(subgraph) {
+    if (signature_runner != nullptr) {
+      signature_runner_.reset(signature_runner);
+    }
+  }
+
+  ~BenchmarkInterpreterRunner() {
+    if (signature_runner_ != nullptr) {
+      signature_runner_.release();
+    }
+  }
+
+  // Creates a BenchmarkInterpreterRunner for the given interpreter. If a
+  // signature key is specified, the signature runner is used. Otherwise, the
+  // interpreter is used.
+  static std::pair<TfLiteStatus, std::unique_ptr<BenchmarkInterpreterRunner>>
+  Create(tflite::Interpreter* const interpreter, std::string signature_key) {
+    if (!signature_key.empty()) {
+      const std::vector<const std::string*>& keys =
+          interpreter->signature_keys();
+      bool found = std::any_of(
+          keys.begin(), keys.end(),
+          [&signature_key](const auto& k) { return *k == signature_key; });
+
+      if (keys.size() > 1 && (signature_key.empty() || !found)) {
+        TFLITE_LOG(ERROR)
+            << "Signature not specified or incorrect for graph with multiple "
+               "signatures. Pass one of the following to the flag "
+               "\"--signature_to_run_for\"";
+        for (const std::string* k : keys) {
+          TFLITE_LOG(ERROR) << " #> Signature key: " << *k;
+        }
+        return {kTfLiteError, nullptr};
+      } else if (keys.size() == 1 && signature_key.empty()) {
+        signature_key = *keys[0];
+      }
+
+      if (!signature_key.empty() && !keys.empty()) {
+        TFLITE_LOG(INFO) << "Using signature: " << signature_key;
+        auto signature_runner =
+            interpreter->GetSignatureRunner(signature_key.c_str());
+        if (signature_runner == nullptr) {
+          return {kTfLiteError, nullptr};
+        } else {
+          int subgraph_index =
+              interpreter->GetSubgraphIndexFromSignature(signature_key.c_str());
+
+          return {kTfLiteOk, std::make_unique<BenchmarkInterpreterRunner>(
+                                 interpreter, signature_runner,
+                                 interpreter->subgraph(subgraph_index))};
+        }
+      }
+    }
+    return {kTfLiteOk, std::make_unique<BenchmarkInterpreterRunner>(
+                           interpreter, nullptr, nullptr)};
+  }
+
+  // Updates allocations for all tensors, related to the given signature.
+  TfLiteStatus AllocateTensors();
+
+  // Invokes the interpreter or signature runner (run the graph identified by
+  // the given signature in dependency order).
+  TfLiteStatus Invoke();
+
+  // Return vector of node indices in the order of execution.
+  //
+  // This is a list of node indices (to index into nodes_and_registration).
+  // This represents a valid topological sort (dependency ordered) execution
+  // plan. In particular, it is valid for this ordering to contain only a
+  // subset of the node indices.
+  // Warning: This is an experimental API and subject to change.
+  const std::vector<int>& execution_plan() const;
+
+  // Read only access to list of inputs.
+  //
+  // Array of indices representing the tensors that are inputs to the
+  // interpreter.
+  // Warning: This is an experimental API and subject to change.
+  const std::vector<int>& inputs() const;
+
+  // Read only access to list of outputs.
+  //
+  // Array of indices representing the tensors that are outputs to the
+  // interpreter.
+  // Warning: This is an experimental API and subject to change.
+  const std::vector<int>& outputs() const;
+
+  // Get a mutable tensor data structure via index.
+  // Warning: This is an experimental API and subject to change.
+  TfLiteTensor* tensor(int tensor_index);
+
+  // Get a pointer to an operation and registration data structure if in
+  // bounds of the signature subgraph.
+  // Warning: This is an experimental API and subject to change.
+  const std::pair<TfLiteNode, TfLiteRegistration>* node_and_registration(
+      int node_index) const;
+
+  // Change the dimensionality of a given tensor. Note, this is only acceptable
+  // for tensor indices that are inputs or variables.
+  // Returns status of failure or success. Note that this doesn't actually
+  // resize any existing buffers. A call to AllocateTensors() is required to
+  // change the tensor input buffer.
+  TfLiteStatus ResizeInputTensor(int tensor_index,
+                                 const std::vector<int>& new_size);
+
+ private:
+  BenchmarkInterpreterRunner() = delete;
+  tflite::Interpreter* const interpreter_ = nullptr;
+
+  std::unique_ptr<tflite::SignatureRunner> signature_runner_;
+  tflite::Subgraph* const subgraph_ = nullptr;
+};
 
 // Benchmarks a TFLite model by running tflite interpreter.
 class BenchmarkTfLiteModel : public BenchmarkModel {
@@ -96,7 +220,7 @@ class BenchmarkTfLiteModel : public BenchmarkModel {
   // Allow subclasses to create a customized Op resolver during init.
   virtual std::unique_ptr<tflite::OpResolver> GetOpResolver() const;
 
-  // Allow subclass to initialize a customized tflite interpereter.
+  // Allow subclass to initialize a customized tflite interpreter.
   virtual TfLiteStatus InitInterpreter();
 
   // Create a BenchmarkListener that's specifically for TFLite profiling if
@@ -112,6 +236,7 @@ class BenchmarkTfLiteModel : public BenchmarkModel {
   std::vector<utils::InputTensorData> inputs_data_;
   std::unique_ptr<tflite::FlatBufferModel> model_;
   std::unique_ptr<tflite::Interpreter> interpreter_;
+  std::unique_ptr<BenchmarkInterpreterRunner> interpreter_runner_;
   std::unique_ptr<tflite::ExternalCpuBackendContext> external_context_;
 
  private:
