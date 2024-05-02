@@ -22,6 +22,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "llvm/ADT/DenseMap.h"
+#include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "xla/service/gpu/model/affine_map_printer.h"
 #include "xla/service/gpu/model/indexing_map.h"
@@ -149,10 +151,25 @@ class SymbolicTile {
 
   void Print(std::ostream& out, const AffineMapPrinter& printer) const;
 
-  mlir::AffineMap offset_map() const { return offset_map_; }
-  mlir::AffineMap size_map() const { return size_map_; }
-  mlir::AffineMap stride_map() const { return stride_map_; }
-  const std::vector<RTVar>& rt_vars() const { return rt_vars_; }
+  mlir::AffineMap offset_map() const;
+  mlir::AffineMap size_map() const;
+  mlir::AffineMap stride_map() const;
+
+  // A map from one tile's size and RTVars to another tile's offset, size, and
+  // stride.
+  //
+  // (size0, ..., size{n-1})[rt_vars0, ..., rt_vars{k-1}] ->
+  // (offset0, ..., offset{n-1},
+  //  size'0, ..., size'{n-1},
+  //  stride0, ..., stride{n-1})
+  //
+  // Its type is IndexingMap, but it's not a map of indices.
+  // It can have RTVars and constraints.
+  //
+  // Note: If you use this (the new API), then don't use offset_map(),
+  // size_map(), and stride_map(), because they use dimensions and symbols in a
+  // different way.
+  const IndexingMap& tile_map() const { return tile_map_; }
 
   // This allows GUnit to print the tile.
   template <typename Sink>
@@ -161,17 +178,11 @@ class SymbolicTile {
   }
 
  private:
-  mlir::AffineMap offset_map_;
-  mlir::AffineMap size_map_;
-  mlir::AffineMap stride_map_;
-  std::vector<RTVar> rt_vars_;
+  // See the comment of tile_map().
+  IndexingMap tile_map_;
 
-  SymbolicTile(mlir::AffineMap offset_map, mlir::AffineMap size_map,
-               mlir::AffineMap stride_map, std::vector<RTVar> rt_vars)
-      : offset_map_(offset_map),
-        size_map_(size_map),
-        stride_map_(stride_map),
-        rt_vars_(std::move(rt_vars)) {}
+  explicit SymbolicTile(IndexingMap tile_map)
+      : tile_map_(std::move(tile_map)) {}
 };
 
 }  // namespace gpu
