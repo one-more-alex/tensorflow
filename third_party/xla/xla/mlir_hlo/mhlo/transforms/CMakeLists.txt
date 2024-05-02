@@ -306,7 +306,6 @@ target_link_libraries(AllMhloPasses INTERFACE
   MhloToStandard
   HloToLinalgUtils
   MhloToLinalg
-  MhloShapeOpsToStandard
   MhloToStablehlo
   StablehloToMhlo
 )
